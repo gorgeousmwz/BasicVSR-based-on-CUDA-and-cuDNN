@@ -1,0 +1,66 @@
+Line #    Mem usage    Increment  Occurences   Line Contents
+============================================================
+    77    380.9 MiB    380.9 MiB           1       @profile
+    78                                             def forward(self, lrs):
+    79    380.9 MiB      0.0 MiB           1           n, t, c, h, w = lrs.size()
+    80    380.9 MiB      0.0 MiB           1           time_consming=[]
+    81    380.9 MiB      0.0 MiB           1           assert h >= 64 and w >= 64, (#输入限制
+    82                                                     'The height and width of input should be at least 64, but got {h} and {w}.'.format(h,w))
+    83    380.9 MiB      0.0 MiB           1           start=time.time()
+    84                                                 #获取光流
+    85    774.9 MiB    394.1 MiB           1           forward_flow, backward_flow = self.comp_flow(lrs)
+    86    774.9 MiB      0.0 MiB           1           end=time.time()
+    87    774.9 MiB      0.0 MiB           1           time_consming.append(end-start)
+    88                                         
+    89                                                 # forward_flow = rearrange(forward_flow, 'n t c h w -> t n h w c').contiguous()
+    90                                                 # backward_flow = rearrange(backward_flow, 'n t c h w -> t n h w c').contiguous()
+    91                                                 # lrs = rearrange(lrs, 'n t c h w -> t n c h w').contiguous()
+    92                                         
+    93                                                 # Backward Propagation 后向分支
+    94    774.9 MiB      0.0 MiB           1           start=time.time()
+    95    774.9 MiB      0.0 MiB           1           rlt = []#后向对齐特征序列
+    96    774.9 MiB      0.0 MiB           1           feat_prop = lrs.new_zeros(n, self.num_feat, h, w)#传播特征
+    97   5270.3 MiB      0.0 MiB          41           for i in range(t-1, -1, -1):#逆向遍历每一帧
+    98   5151.4 MiB      0.0 MiB          40               curr_lr = lrs[:, i, :, :, :]#当前帧
+    99   5151.4 MiB      0.0 MiB          40               if i < t-1:
+   100   5151.4 MiB      0.0 MiB          39                   flow = backward_flow[:, i, :, :, :]# flow estimation module（获取下一帧的光流）
+   101   5151.4 MiB     19.7 MiB          39                   feat_prop = flow_warp(feat_prop, flow.permute(0, 2, 3, 1))# spatial warping module
+   102                                                     
+   103   5152.4 MiB     39.9 MiB          40               feat_prop = torch.cat([curr_lr, feat_prop], dim=1)#与当前帧融合
+   104   5270.3 MiB   4435.6 MiB          40               feat_prop = self.backward_resblocks(feat_prop)# residual blocks
+   105   5270.3 MiB      0.2 MiB          40               rlt.append(feat_prop)#加入特征序列
+   106   5270.3 MiB      0.0 MiB           1           rlt = rlt[::-1]#倒序
+   107   5270.3 MiB      0.0 MiB           1           end=time.time()
+   108   5270.3 MiB      0.0 MiB           1           time_consming.append(end-start)
+   109                                         
+   110                                                 # Forward Propagation 前向分支
+   111   5270.3 MiB      0.0 MiB           1           start=time.time()
+   112   5271.7 MiB      1.4 MiB           1           feat_prop = torch.zeros_like(feat_prop)#传播特征
+   113  10775.7 MiB      0.0 MiB          41           for i in range(0, t):#正向遍历每一帧
+   114  10661.0 MiB      0.0 MiB          40               curr_lr = lrs[:, i, :, :, :]#当前帧
+   115  10661.0 MiB      0.0 MiB          40               if i > 0:
+   116  10661.0 MiB      0.3 MiB          39                   flow = forward_flow[:, i-1, :, :, :]# flow estimation module（获取上一帧的光流）
+   117  10661.0 MiB      2.4 MiB          39                   feat_prop = flow_warp(feat_prop, flow.permute(0, 2, 3, 1))# spatial warping module
+   118                                                     
+   119  10661.0 MiB      1.3 MiB          40               feat_prop = torch.cat([curr_lr, feat_prop], dim=1)#与当前帧融合
+   120  10715.1 MiB   1901.6 MiB          40               feat_prop = self.forward_resblocks(feat_prop)# residual blocks
+   121                                         
+   122                                                     # Fusion and Upsampling
+   123                                                     ##前后向分支对齐特征融合
+   124  10717.2 MiB     82.7 MiB          40               cat_feat = torch.cat([rlt[i], feat_prop], dim=1)
+   125  10719.0 MiB     84.1 MiB          40               sr_rlt = self.lrelu(self.concate(cat_feat))
+   126                                                     #上采样
+   127  10727.2 MiB    365.9 MiB          40               sr_rlt = self.lrelu(self.up1(sr_rlt))
+   128  10759.2 MiB   1664.8 MiB          40               sr_rlt = self.lrelu(self.up2(sr_rlt))
+   129  10774.9 MiB   1186.8 MiB          40               sr_rlt = self.lrelu(self.conv_hr(sr_rlt))
+   130  10774.9 MiB    209.1 MiB          40               sr_rlt = self.conv_last(sr_rlt)
+   131                                         
+   132                                                     # Global Residual Learning
+   133  10775.7 MiB      5.1 MiB          40               base = self.img_up(curr_lr)
+   134                                         
+   135  10775.7 MiB      0.0 MiB          40               sr_rlt += base
+   136  10775.7 MiB      0.0 MiB          40               rlt[i] = sr_rlt
+   137  10775.7 MiB      0.0 MiB           1           end=time.time()
+   138  10775.7 MiB      0.0 MiB           1           time_consming.append(end-start)
+   139                                         
+   140  10805.2 MiB     29.5 MiB           1           return torch.stack(rlt, dim=1),time_consming
